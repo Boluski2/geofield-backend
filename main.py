@@ -1,4 +1,4 @@
-
+﻿
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
@@ -28,9 +28,11 @@ from fastapi.security import OAuth2PasswordRequestForm
 import re
 from datetime import datetime, timezone
 from fastapi.responses import FileResponse
+from fastapi.responses import Response
+from photo_storage import upload_photo, delete_photo, download_photo
 
 
-load_dotenv()
+load_dotenv(override=True)
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 SECRET_KEY = os.getenv("SECRET_KEY")
@@ -222,10 +224,6 @@ def get_current_user(
 
     return dict(user)
 
-
-
-
-
 @app.post("/observations/{observation_id}/photos", status_code=201)
 async def upload_observation_photo(
     observation_id: int,
@@ -339,19 +337,14 @@ async def upload_observation_photo(
                 "photo": existing_photo,
             }
 
+
         filename = f"{uuid.uuid4().hex}{extension}"
-
-        upload_dir = (
-            Path(__file__).resolve().parent
-            / "uploads"
-            / "observations"
-        )
-        upload_dir.mkdir(parents=True, exist_ok=True)
-
-        photo_path = upload_dir / filename
+        cloudinary_uploaded = False
 
         try:
-            photo_path.write_bytes(image_data)
+            # Upload remotely before creating the database record.
+            upload_photo(image_data, observation_id, filename)
+            cloudinary_uploaded = True
 
             with get_connection() as conn:
                 photo = conn.execute(
@@ -384,8 +377,9 @@ async def upload_observation_photo(
             }
 
         except UniqueViolation:
-            # Another simultaneous request may have saved this key first.
-            photo_path.unlink(missing_ok=True)
+            # A concurrent request may have won the idempotency race.
+            if cloudinary_uploaded:
+                delete_photo(observation_id, filename)
 
             with get_connection() as conn:
                 existing = conn.execute(
@@ -423,8 +417,14 @@ async def upload_observation_photo(
             }
 
         except Exception:
-            photo_path.unlink(missing_ok=True)
+            if cloudinary_uploaded:
+                try:
+                    delete_photo(observation_id, filename)
+                except Exception:
+                    # Preserve the original error; cleanup can be retried.
+                    pass
             raise
+
 
     finally:
         await file.close()
@@ -503,113 +503,24 @@ def get_observation_photo_image(
             detail="Photo not found.",
         )
 
-    upload_dir = (
-        Path(__file__).resolve().parent
-        / "uploads"
-        / "observations"
-    )
-
-    photo_path = upload_dir / photo["filename"]
-
-    if not photo_path.is_file():
-        raise HTTPException(
-            status_code=404,
-            detail="Photo file not found.",
-        )
-
-    return FileResponse(
-        path=photo_path,
-        media_type=photo["content_type"],
-        content_disposition_type="inline",
-    )
-
-
-
-@app.delete(
-    "/observations/{observation_id}/photos/{photo_id}"
-)
-def delete_observation_photo(
-    observation_id: int,
-    photo_id: int,
-    current_user: dict = Depends(get_current_user),
-):
-    upload_dir = (
-        Path(__file__).resolve().parent
-        / "uploads"
-        / "observations"
-    )
-
-    # Verify that the photo belongs to an observation
-    # owned by the authenticated user.
-    with get_connection() as conn:
-        photo = conn.execute(
-            """
-            SELECT op.filename
-            FROM observation_photos AS op
-            JOIN field_observations AS fo
-                ON fo.id = op.observation_id
-            WHERE op.id = %s
-              AND op.observation_id = %s
-              AND fo.user_id = %s
-            """,
-            (
-                photo_id,
-                observation_id,
-                current_user["id"],
-            ),
-        ).fetchone()
-
-        if photo is None:
-            raise HTTPException(
-                status_code=404,
-                detail="Photo not found.",
-            )
-
-        # Delete the database record only after verifying
-        # ownership. The transaction commits on exit.
-        deleted_photo = conn.execute(
-            """
-            DELETE FROM observation_photos AS op
-            USING field_observations AS fo
-            WHERE op.observation_id = fo.id
-              AND op.id = %s
-              AND op.observation_id = %s
-              AND fo.user_id = %s
-            RETURNING op.filename
-            """,
-            (
-                photo_id,
-                observation_id,
-                current_user["id"],
-            ),
-        ).fetchone()
-
-        if deleted_photo is None:
-            raise HTTPException(
-                status_code=404,
-                detail="Photo not found.",
-            )
-
-    # Remove the image file after the database transaction.
-    photo_path = upload_dir / deleted_photo["filename"]
 
     try:
-        photo_path.unlink(missing_ok=True)
-    except OSError:
-        # The database record is already deleted.
-        # Report the storage failure rather than hiding it.
+        image_data = download_photo(
+            observation_id,
+            photo["filename"],
+        )
+    except (RuntimeError, ValueError):
         raise HTTPException(
-            status_code=500,
-            detail=(
-                "Photo record deleted, but the image file "
-                "could not be removed from storage."
-            ),
+            status_code=502,
+            detail="Unable to retrieve photo from storage.",
         )
 
-    return {
-        "message": "Photo deleted successfully.",
-        "photo_id": photo_id,
-    }
+    return Response(
+        content=image_data,
+        media_type=photo["content_type"],
+        headers={"Content-Disposition": "inline"},
+    )
+
 
 
 
@@ -918,6 +829,95 @@ def delete_task(
         "message": "Task deleted successfully",
         "task_id": deleted_task["id"],
     }
+
+
+@app.delete(
+    "/observations/{observation_id}/photos/{photo_id}"
+)
+def delete_observation_photo(
+    observation_id: int,
+    photo_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    # First verify ownership and retrieve the photo filename.
+    with get_connection() as conn:
+        photo = conn.execute(
+            """
+            SELECT op.filename
+            FROM observation_photos AS op
+            JOIN field_observations AS fo
+                ON fo.id = op.observation_id
+            WHERE op.id = %s
+              AND op.observation_id = %s
+              AND fo.user_id = %s
+            """,
+            (
+                photo_id,
+                observation_id,
+                current_user["id"],
+            ),
+        ).fetchone()
+
+    if photo is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Photo not found.",
+        )
+
+    # Delete the private Cloudinary asset before the DB record.
+    try:
+        delete_photo(
+            observation_id,
+            photo["filename"],
+        )
+    except (RuntimeError, ValueError):
+        raise HTTPException(
+            status_code=502,
+            detail="Unable to delete photo from storage.",
+        )
+
+    # Delete the DB record only after Cloudinary succeeds.
+    try:
+        with get_connection() as conn:
+            deleted_photo = conn.execute(
+                """
+                DELETE FROM observation_photos AS op
+                USING field_observations AS fo
+                WHERE op.observation_id = fo.id
+                  AND op.id = %s
+                  AND op.observation_id = %s
+                  AND fo.user_id = %s
+                RETURNING op.filename
+                """,
+                (
+                    photo_id,
+                    observation_id,
+                    current_user["id"],
+                ),
+            ).fetchone()
+
+            if deleted_photo is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Photo record no longer exists.",
+                )
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Photo storage was deleted, but the database "
+                "record could not be removed. Reconciliation is required."
+            ),
+        )
+
+    # Preserve local files until the migration is fully verified.
+    return {
+        "message": "Photo deleted successfully.",
+        "photo_id": photo_id,
+    }
+
 
 
 @app.post("/projects/{project_id}/observations", status_code=201)
