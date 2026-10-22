@@ -14,3 +14,7 @@ htmlcov/
 
 .idea/
 .vscode/
+
+# Local recovery backups
+*.bak
+*.dump
