@@ -83,6 +83,21 @@ class PhotoCaptionUpdate(BaseModel):
     )
 
 
+
+def safe_csv_cell(value) -> str:
+    """Prevent spreadsheet formula execution from untrusted text cells."""
+    if value is None:
+        return ""
+
+    text = str(value)
+
+    # Check after whitespace so leading spaces cannot hide a formula.
+    if text.lstrip(" \t\r\n").startswith(("=", "+", "-", "@")):
+        return "'" + text
+
+    return text
+
+
 def get_connection():
     return psycopg.connect(
         DATABASE_URL,
@@ -1209,15 +1224,15 @@ def export_observations_csv(
                 writer.writerow([
                     row["id"],
                     row["project_id"],
-                    row["title"],
-                    row["notes"] or "",
+                    safe_csv_cell(row["title"]),
+                    safe_csv_cell(row["notes"]),
                     row["latitude"],
                     row["longitude"],
                     row["status"],
                     row["created_at"].isoformat()
                     if row["created_at"]
                     else "",
-                    user_name,
+                    safe_csv_cell(user_name),
                     exported_at,
                 ])
 

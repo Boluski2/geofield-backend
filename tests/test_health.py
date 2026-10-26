@@ -340,3 +340,237 @@ def test_delete_photo_endpoint_does_not_delete_another_users_photo():
     assert response.json()["detail"] == "Photo not found."
     mock_delete.assert_not_called()
     mock_connection.execute.assert_called_once()
+
+
+def test_update_task_does_not_update_another_users_task():
+    token = create_access_token(1)
+    mock_connection = MagicMock()
+    mock_connection.__enter__.return_value = mock_connection
+    mock_cursor = mock_connection.cursor.return_value.__enter__.return_value
+    mock_cursor.fetchone.return_value = None
+
+    previous_override = app.dependency_overrides.get(get_current_user)
+    app.dependency_overrides[get_current_user] = lambda: {"id": 1}
+
+    try:
+        with patch("main.get_connection", return_value=mock_connection):
+            response = client.patch(
+                "/projects/20/tasks/30?completed=true",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    finally:
+        if previous_override is None:
+            app.dependency_overrides.pop(get_current_user, None)
+        else:
+            app.dependency_overrides[get_current_user] = previous_override
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Task not found"
+    mock_cursor.execute.assert_called_once()
+
+
+def test_delete_task_does_not_delete_another_users_task():
+    token = create_access_token(1)
+    mock_connection = MagicMock()
+    mock_connection.__enter__.return_value = mock_connection
+    mock_cursor = mock_connection.cursor.return_value.__enter__.return_value
+    mock_cursor.fetchone.return_value = None
+
+    previous_override = app.dependency_overrides.get(get_current_user)
+    app.dependency_overrides[get_current_user] = lambda: {"id": 1}
+
+    try:
+        with patch("main.get_connection", return_value=mock_connection):
+            response = client.delete(
+                "/projects/20/tasks/30",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    finally:
+        if previous_override is None:
+            app.dependency_overrides.pop(get_current_user, None)
+        else:
+            app.dependency_overrides[get_current_user] = previous_override
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Task not found"
+    mock_cursor.execute.assert_called_once()
+
+
+def test_create_task_does_not_create_task_for_another_users_project():
+    token = create_access_token(1)
+
+    mock_connection = MagicMock()
+    mock_connection.__enter__.return_value = mock_connection
+    mock_cursor = mock_connection.cursor.return_value.__enter__.return_value
+
+    # Simulate a project that the authenticated user does not own.
+    mock_cursor.fetchone.return_value = None
+
+    previous_override = app.dependency_overrides.get(get_current_user)
+    app.dependency_overrides[get_current_user] = lambda: {"id": 1}
+
+    try:
+        with patch("main.get_connection", return_value=mock_connection):
+            response = client.post(
+                "/projects/20/tasks",
+                json={"title": "Unauthorized task"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    finally:
+        if previous_override is None:
+            app.dependency_overrides.pop(get_current_user, None)
+        else:
+            app.dependency_overrides[get_current_user] = previous_override
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Project not found"
+
+    # Only the ownership-check query should execute.
+    assert mock_cursor.execute.call_count == 1
+    assert "SELECT id" in mock_cursor.execute.call_args[0][0]
+
+
+def test_create_observation_does_not_create_for_another_users_project():
+    token = create_access_token(1)
+
+    mock_connection = MagicMock()
+    mock_connection.__enter__.return_value = mock_connection
+    mock_cursor = mock_connection.cursor.return_value.__enter__.return_value
+    mock_cursor.fetchone.return_value = None
+
+    previous_override = app.dependency_overrides.get(get_current_user)
+    app.dependency_overrides[get_current_user] = lambda: {"id": 1}
+
+    try:
+        with patch("main.get_connection", return_value=mock_connection):
+            response = client.post(
+                "/projects/20/observations",
+                json={
+                    "title": "Damaged drainage",
+                    "notes": "Drainage needs inspection.",
+                    "latitude": 6.5244,
+                    "longitude": 3.3792,
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    finally:
+        if previous_override is None:
+            app.dependency_overrides.pop(get_current_user, None)
+        else:
+            app.dependency_overrides[get_current_user] = previous_override
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Project not found"
+
+    # Only the project ownership query should execute.
+    assert mock_cursor.execute.call_count == 1
+    assert "SELECT id" in mock_cursor.execute.call_args[0][0]
+
+
+def test_delete_observation_does_not_delete_another_users_observation():
+    token = create_access_token(1)
+
+    mock_connection = MagicMock()
+    mock_connection.__enter__.return_value = mock_connection
+    mock_cursor = mock_connection.cursor.return_value.__enter__.return_value
+    mock_cursor.fetchone.return_value = None
+
+    previous_override = app.dependency_overrides.get(get_current_user)
+    app.dependency_overrides[get_current_user] = lambda: {"id": 1}
+
+    try:
+        with patch("main.get_connection", return_value=mock_connection):
+            response = client.delete(
+                "/projects/20/observations/30",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    finally:
+        if previous_override is None:
+            app.dependency_overrides.pop(get_current_user, None)
+        else:
+            app.dependency_overrides[get_current_user] = previous_override
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Field observation not found"
+    mock_cursor.execute.assert_called_once()
+    assert "DELETE FROM field_observations" in mock_cursor.execute.call_args[0][0]
+
+
+def test_csv_export_filters_observations_by_authenticated_user():
+    token = create_access_token(1)
+
+    mock_connection = MagicMock()
+    mock_connection.__enter__.return_value = mock_connection
+    mock_cursor = mock_connection.cursor.return_value.__enter__.return_value
+    mock_cursor.fetchall.return_value = []
+
+    previous_override = app.dependency_overrides.get(get_current_user)
+    app.dependency_overrides[get_current_user] = lambda: {
+        "id": 1,
+        "name": "Test User",
+    }
+
+    try:
+        with patch("main.get_connection", return_value=mock_connection):
+            response = client.get(
+                "/observations/export/csv",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    finally:
+        if previous_override is None:
+            app.dependency_overrides.pop(get_current_user, None)
+        else:
+            app.dependency_overrides[get_current_user] = previous_override
+
+    assert response.status_code == 200
+    assert "text/csv" in response.headers["content-type"]
+    assert "attachment;" in response.headers["content-disposition"]
+
+    executed_sql = mock_cursor.execute.call_args[0][0]
+    query_parameters = mock_cursor.execute.call_args[0][1]
+
+    assert "WHERE user_id = %s" in executed_sql
+    assert query_parameters == (1,)
+
+
+def test_csv_export_escapes_formula_like_observation_titles():
+    token = create_access_token(1)
+
+    mock_connection = MagicMock()
+    mock_connection.__enter__.return_value = mock_connection
+    mock_cursor = mock_connection.cursor.return_value.__enter__.return_value
+    mock_cursor.fetchall.return_value = [
+        {
+            "id": 30,
+            "project_id": 20,
+            "title": "=1+1",
+            "notes": "  @SUM(A1:A2)",
+            "latitude": 6.5244,
+            "longitude": 3.3792,
+            "status": "pending",
+            "created_at": None,
+        }
+    ]
+
+    previous_override = app.dependency_overrides.get(get_current_user)
+    app.dependency_overrides[get_current_user] = lambda: {
+        "id": 1,
+        "name": "=Test User",
+    }
+
+    try:
+        with patch("main.get_connection", return_value=mock_connection):
+            response = client.get(
+                "/observations/export/csv",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    finally:
+        if previous_override is None:
+            app.dependency_overrides.pop(get_current_user, None)
+        else:
+            app.dependency_overrides[get_current_user] = previous_override
+
+    assert response.status_code == 200
+    assert "'=1+1" in response.text
+    assert "'  @SUM(A1:A2)" in response.text
+    assert "'=Test User" in response.text
