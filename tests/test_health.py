@@ -312,6 +312,44 @@ def test_delete_photo_endpoint_keeps_database_record_if_cloudinary_fails():
     assert mock_connection.execute.call_count == 1
 
 
+def test_delete_photo_endpoint_reports_database_failure_after_storage_deletion():
+    token = create_access_token(1)
+    mock_connection = MagicMock()
+    mock_connection.__enter__.return_value = mock_connection
+
+    # Ownership check succeeds, but the database deletion fails.
+    mock_connection.execute.return_value.fetchone.side_effect = [
+        {"filename": "test-photo.jpg"},
+        RuntimeError("Database unavailable"),
+    ]
+
+    previous_override = app.dependency_overrides.get(get_current_user)
+    app.dependency_overrides[get_current_user] = lambda: {"id": 1}
+
+    try:
+        with (
+            patch("main.get_connection", return_value=mock_connection),
+            patch("main.delete_photo", return_value={"result": "ok"}) as mock_delete,
+        ):
+            response = client.delete(
+                "/observations/2/photos/10",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    finally:
+        if previous_override is None:
+            app.dependency_overrides.pop(get_current_user, None)
+        else:
+            app.dependency_overrides[get_current_user] = previous_override
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == (
+        "Photo storage was deleted, but the database "
+        "record could not be removed. Reconciliation is required."
+    )
+    mock_delete.assert_called_once_with(2, "test-photo.jpg")
+    assert mock_connection.execute.call_count == 2
+
+
 def test_delete_photo_endpoint_does_not_delete_another_users_photo():
     token = create_access_token(1)
     mock_connection = MagicMock()
