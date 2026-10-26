@@ -42,6 +42,24 @@ def test_login_rejects_missing_credentials():
 
     assert response.status_code == 422
 
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"name": "A", "email": "valid@example.com", "password": "password123"},
+        {"name": "A" * 101, "email": "valid@example.com", "password": "password123"},
+        {"name": "Valid Name", "email": "not-an-email", "password": "password123"},
+        {"name": "Valid Name", "email": "valid@example.com", "password": "short"},
+        {"name": "Valid Name", "email": "valid@example.com", "password": "p" * 129},
+    ],
+)
+def test_register_rejects_invalid_input(payload):
+    response = client.post("/register", json=payload)
+
+    assert response.status_code == 422
+
+
+
 def test_me_rejects_token_for_deleted_user():
     token = create_access_token(999999)
 
