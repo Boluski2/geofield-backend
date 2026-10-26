@@ -17,7 +17,8 @@ from fastapi import UploadFile, File, Form, Header
 import jwt
 import psycopg
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, status, Query
+from fastapi import Depends, FastAPI, HTTPException, status, Query, Request
+from rate_limiter import enforce_rate_limit
 from fastapi.security import OAuth2PasswordBearer
 from jwt.exceptions import InvalidTokenError
 from psycopg.rows import dict_row
@@ -136,7 +137,16 @@ def home():
 
 
 @app.post("/register", status_code=201)
-def register(data: RegisterRequest):
+def register(
+    request: Request,
+    data: RegisterRequest,
+):
+    enforce_rate_limit(
+        request=request,
+        endpoint="register",
+        limit=5,
+        window_seconds=3600,
+    )
     with get_connection() as connection:
         try:
             with connection.cursor() as cursor:
@@ -161,12 +171,17 @@ def register(data: RegisterRequest):
 
     return dict(user)
 
-
-
 @app.post("/login")
 def login(
-    form_data: Annotated[OAuth2PasswordRequestForm, Depends()]
+    request: Request,
+    form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
 ):
+    enforce_rate_limit(
+        request=request,
+        endpoint="login",
+        limit=10,
+        window_seconds=900,
+    )
     email = form_data.username.lower()
     password = form_data.password
 

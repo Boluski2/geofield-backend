@@ -1,10 +1,12 @@
-﻿from io import BytesIO
+from io import BytesIO
 from fastapi.testclient import TestClient
 from main import app, get_current_user
 from unittest.mock import MagicMock, patch
 
 from main import create_access_token
 import pytest
+from fastapi import HTTPException
+
 from photo_storage import (
     photo_public_id,
     upload_photo,
@@ -144,7 +146,6 @@ def test_delete_photo_uses_authenticated_storage(
         type="authenticated",
         invalidate=True,
     )
-
 
 @patch("photo_storage.cloudinary.uploader.destroy")
 @patch("photo_storage.configure_cloudinary")
@@ -630,3 +631,47 @@ def test_csv_export_escapes_formula_like_observation_titles():
     assert "'=1+1" in response.text
     assert "'  @SUM(A1:A2)" in response.text
     assert "'=Test User" in response.text
+
+def test_register_rate_limit_blocks_request_before_database():
+    with patch(
+        "main.enforce_rate_limit",
+        side_effect=HTTPException(
+            status_code=429,
+            detail="Too many requests. Please try again later.",
+            headers={"Retry-After": "60"},
+        ),
+    ), patch("main.get_connection") as mock_connection:
+        response = client.post(
+            "/register",
+            json={
+                "name": "Valid Name",
+                "email": "valid@example.com",
+                "password": "password123",
+            },
+        )
+
+    assert response.status_code == 429
+    assert response.headers["Retry-After"] == "60"
+    mock_connection.assert_not_called()
+
+
+def test_login_rate_limit_blocks_request_before_database():
+    with patch(
+        "main.enforce_rate_limit",
+        side_effect=HTTPException(
+            status_code=429,
+            detail="Too many requests. Please try again later.",
+            headers={"Retry-After": "60"},
+        ),
+    ), patch("main.get_connection") as mock_connection:
+        response = client.post(
+            "/login",
+            data={
+                "username": "valid@example.com",
+                "password": "password123",
+            },
+        )
+
+    assert response.status_code == 429
+    assert response.headers["Retry-After"] == "60"
+    mock_connection.assert_not_called()

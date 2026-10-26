@@ -16,3 +16,5 @@ services:
         sync: false
       - key: CLOUDINARY_API_SECRET
         sync: false
+      - key: REDIS_URL
+        sync: false

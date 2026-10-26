@@ -9,3 +9,5 @@ email-validator==2.3.0
 pytest==9.1.1
 httpx==0.28.1
 cloudinary==1.46.3
+
+redis==8.1.0
