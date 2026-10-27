@@ -1,10 +1,12 @@
 
 import hashlib
+import ipaddress
 import os
 
 import redis
 from fastapi import HTTPException, Request
 from redis.exceptions import RedisError
+
 
 
 def get_redis_client():
@@ -29,12 +31,14 @@ def enforce_rate_limit(
     window_seconds: int,
 ) -> None:
     """Limit requests using an atomic Redis counter."""
+
     trust_render_proxy = (
         os.getenv("TRUST_RENDER_PROXY", "").lower() == "true"
     )
 
     if trust_render_proxy:
-        client_ip = request.headers.get("cf-connecting-ip", "").strip()
+        forwarded_for = request.headers.get("x-forwarded-for", "")
+        client_ip = forwarded_for.split(",")[0].strip()
 
         if not client_ip:
             raise HTTPException(
@@ -42,7 +46,15 @@ def enforce_rate_limit(
                 detail="Client IP verification is temporarily unavailable.",
             )
     else:
-        client_ip = request.client.host if request.client else "unknown"
+        client_ip = request.client.host if request.client else ""
+
+    try:
+        client_ip = str(ipaddress.ip_address(client_ip))
+    except ValueError:
+        raise HTTPException(
+            status_code=503,
+            detail="Client IP verification is temporarily unavailable.",
+        )
 
     # Hash the IP so the raw address is not stored in Redis keys.
     identifier = hashlib.sha256(client_ip.encode()).hexdigest()

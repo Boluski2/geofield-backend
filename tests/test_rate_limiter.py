@@ -104,7 +104,7 @@ def test_local_mode_ignores_forged_proxy_header(
 
 
 @patch("rate_limiter.get_redis_client")
-def test_trusted_proxy_mode_uses_cf_connecting_ip(
+def test_trusted_proxy_mode_uses_first_forwarded_ip(
     mock_get_redis, monkeypatch
 ):
     monkeypatch.setenv("TRUST_RENDER_PROXY", "true")
@@ -115,7 +115,7 @@ def test_trusted_proxy_mode_uses_cf_connecting_ip(
 
     request = make_request()
     request.scope["headers"] = [
-        (b"cf-connecting-ip", b"198.51.100.99")
+        (b"x-forwarded-for", b"198.51.100.99, 203.0.113.20")
     ]
 
     enforce_rate_limit(
@@ -130,7 +130,6 @@ def test_trusted_proxy_mode_uses_cf_connecting_ip(
         b"198.51.100.99"
     ).hexdigest()
     assert redis_key.endswith(expected_identifier)
-
 
 def test_trusted_proxy_mode_without_header_returns_503(monkeypatch):
     monkeypatch.setenv("TRUST_RENDER_PROXY", "true")
